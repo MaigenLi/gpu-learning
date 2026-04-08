@@ -21,6 +21,7 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <dirent.h>
 #include <sys/types.h>
 
 #include <rocm_smi/kfd_ioctl.h>
@@ -194,31 +195,58 @@ static void kfd_ioctl_gpu_info(int kfd_fd) {
 
 /* 通过 /sys 查看拓扑 */
 static void show_sysfs_topology(void) {
-    printf("\n--- /sys/class/kfd/topology ---\n");
+    printf("\n--- /sys/class/kfd/kfd/topology ---\n");
 
-    FILE *f = fopen("/sys/class/kfd/kfd/topology/nodes", "r");
-    if (!f) {
-        printf("  (无法读取 /sys/class/kfd/kfd/topology/nodes)\n");
+    /* system_properties */
+    FILE *f = fopen("/sys/class/kfd/kfd/topology/system_properties", "r");
+    if (f) {
+        char line[256];
+        while (fgets(line, sizeof(line), f)) {
+            printf("  %s", line);
+        }
+        fclose(f);
+    } else {
+        printf("  (无法读取 system_properties)\n");
+    }
+
+    /* generation_id */
+    FILE *g = fopen("/sys/class/kfd/kfd/topology/generation_id", "r");
+    if (g) {
+        char line[64] = {0};
+        if (fgets(line, sizeof(line), g))
+            printf("  generation_id: %s", line);
+        fclose(g);
+    }
+
+    /* nodes 目录 - 遍历每个 GPU 节点 */
+    printf("\n  /sys/class/kfd/kfd/topology/nodes/:\n");
+    DIR *d = opendir("/sys/class/kfd/kfd/topology/nodes");
+    if (!d) {
+        printf("  (无法打开 nodes 目录)\n");
         return;
     }
 
-    char line[256];
-    while (fgets(line, sizeof(line), f)) {
-        /* 找节点 */
-        if (strncmp(line, "node", 4) == 0) {
-            printf("  %s", line);
-        }
-    }
-    fclose(f);
+    struct dirent *entry;
+    while ((entry = readdir(d)) != NULL) {
+        if (entry->d_name[0] == '.') continue;
 
-    /* GPU 属性 */
-    FILE *p = fopen("/sys/class/kfd/kfd/properties", "r");
-    if (p) {
-        while (fgets(line, sizeof(line), p)) {
-            printf("  %s", line);
+        char path[512];
+        snprintf(path, sizeof(path),
+                 "/sys/class/kfd/kfd/topology/nodes/%s/properties",
+                 entry->d_name);
+        FILE *nf = fopen(path, "r");
+        if (!nf) continue;
+
+        printf("\n  [node %s]\n", entry->d_name);
+        char line[256];
+        int count = 0;
+        while (fgets(line, sizeof(line), nf) && count++ < 20) {
+            /* 缩进显示 */
+            printf("    %s", line);
         }
-        fclose(p);
+        fclose(nf);
     }
+    closedir(d);
 }
 
 int main(int argc, char *argv[]) {
